@@ -81,7 +81,7 @@ class InfluxDB(Store):
 
         # https://v2.docs.influxdata.com/v2.0/write-data/best-practices/optimize-writes/
         # Tuning docs indicate 5k is the ideal chunk size for batch writes
-        for c in chunk(agg, 5000):
+        for c in chunk(agg, 5):
             c = '\n'.join(c)
             r = requests.post(self.addr, data=c)
             r.raise_for_status()
