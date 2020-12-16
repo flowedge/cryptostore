@@ -1,10 +1,29 @@
 ## Changelog
 
-### 0.3.0
+### 0.3.2
+  * Bugfix: Fix book building example
+
+### 0.3.1 (2020-11-14)
+  * Feature: Influxdb 1.x authentication support
+  * Bugfix: Extend timeout of Google Drive connection
+  * Feature: Parquet file compression
+  * Feature: Parquet file content optimization
+  * Feature: Option to enable parquet file appending
+  * Feature: Retry writes to storage engines (rather than dying).
+  * Feature: Support for snapshot_interval
+  * Feature: Parquet files can be stored in directories per day
+  * Bugfix: Set arctic storage quota to unlimited (rather than 10G)
+  * Bugfix: Regression in arctic storage backend
+  * Feature: Opened parquet files (when appended) are suffixed with '.tmp'
+  * Feature: Liquidations support
+
+### 0.3.0 (2020-08-18)
   * Feature: Config options for controlling data channel timeouts
   * Feature: Path option in config for local parquet storage
   * Feature: Configurable filenames for parquet storage
   * Bugfix: Ticker missing from ZMQ pass through
+  * Feature: Store data to Google Drive
+  * Bugfix: Kafka now supports the time interval for storage intervals (feature added in 0.2.1)
 
 ### 0.2.1 (2020-03-17)
   * Feature: Open Interest support

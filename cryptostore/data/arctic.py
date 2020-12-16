@@ -13,24 +13,29 @@ from cryptostore.engines import StorageEngines
 
 class Arctic(Store):
     def __init__(self, connection: str):
-        self.data = []
+        self.data = pd.DataFrame()
         self.con = StorageEngines.arctic.Arctic(connection)
 
     def aggregate(self, data):
-        self.data = data
+        if isinstance(data[0], dict):
+            # Case `data` is a list or tuple of dict.
+            self.data = pd.DataFrame(data)
+        else:
+            # Case `data` is a tuple with tuple of keys of dict as 1st parameter,
+            # and generator of dicts as 2nd paramter.
+            # DataFrame creation is faster by more than 10% if column names are provided.
+            self.data = pd.DataFrame(data[1], columns=data[0])
 
     def write(self, exchange, data_type, pair, timestamp):
-        chunk_size = None
-        if not self.data:
+        if self.data.empty:
             return
-        df = pd.DataFrame(self.data)
-        self.data = []
 
+        df = self.data
         df['date'] = pd.to_datetime(df['timestamp'], unit='s')
         df['receipt_timestamp'] = pd.to_datetime(df['receipt_timestamp'], unit='s')
-
         df = df.drop(['timestamp'], axis=1)
 
+        chunk_size = None
         if data_type == TRADES:
             if 'id' in df:
                 df['id'] = df['id'].astype(str)
@@ -53,6 +58,8 @@ class Arctic(Store):
         df.index = df.index.tz_localize(None)
         if exchange not in self.con.list_libraries():
             self.con.initialize_library(exchange, lib_type=StorageEngines.arctic.CHUNK_STORE)
+            # set the quota of each arctic library to unlimited
+            self.con.set_quota(exchange, 0)
         self.con[exchange].append(f"{data_type}-{pair}", df, upsert=True, chunk_size=chunk_size)
 
     def get_start_date(self, exchange: str, data_type: str, pair: str) -> float:

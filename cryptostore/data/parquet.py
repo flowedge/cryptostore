@@ -6,6 +6,7 @@ associated with this software.
 '''
 import os
 import glob
+import datetime
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -13,11 +14,15 @@ import pyarrow.parquet as pq
 from cryptostore.data.store import Store
 from cryptostore.data.gc import google_cloud_write, google_cloud_read, google_cloud_list
 from cryptostore.data.s3 import aws_write, aws_read, aws_list
+from cryptostore.data.gd import GDriveConnector
 from cryptostore.exceptions import InconsistentStorage
 
 
 class Parquet(Store):
-    def __init__(self, config=None):
+
+    default_path = lambda self, exchange, data_type, pair: f'{exchange}/{data_type}/{pair}'
+
+    def __init__(self, exchanges, config=None, parquet_buffer=None):
         self._write = []
         self._read = []
         self._list = []
@@ -26,12 +31,23 @@ class Parquet(Store):
         self.prefix = []
         self.data = None
         self.del_file = True
-        self.file_name = config.get('file_format') if config else None
-        self.path = config.get('path') if config else None
-
+        self.file_name = None
+        self.path = None
+        self.prefix_date = False
+        self.comp_codec = None
+        self.comp_level = None
+        self.buffer = parquet_buffer
         if config:
+            self.file_name = config.get('file_format')
+            self.path = config.get('path')
+            self.prefix_date = config.get('prefix_date', False)
             self.del_file = config.get('del_file', True)
-
+            # Compression
+            if 'compression' in config:
+                self.comp_codec = config['compression']['codec']
+                if 'level' in config['compression']:
+                    self.comp_level = config['compression']['level']
+            # Connectors
             if 'GCS' in config:
                 self._write.append(google_cloud_write)
                 self._read.append(google_cloud_read)
@@ -46,27 +62,49 @@ class Parquet(Store):
                 self.bucket.append(config['S3']['bucket'])
                 self.prefix.append(config['S3']['prefix'])
                 self.kwargs.append({'creds': (config['S3']['key_id'], config['S3']['secret']), 'endpoint': config['S3'].get('endpoint')})
+            if 'GD' in config:
+                folder_name_sep = config['GD']['folder_name_sep'] if 'folder_name_sep' in config['GD'] else '-'
+                g_drive = GDriveConnector(config['GD']['service_account'], exchanges, config['GD']['prefix'], folder_name_sep, self.default_path)
+                self._write.append(g_drive.write)
+                self.prefix.append(None)
+                self.bucket.append(None)
+                self.kwargs.append({'dummy': 'Dummy'})
+            # Counter
+            self.append_counter = config.get('append_counter') if 'append_counter' in config else 0
+
 
     def aggregate(self, data):
-        names = list(data[0].keys())
-        cols = {name : [] for name in names}
-
+        if isinstance(data[0], dict):
+            # Case `data` is a list or tuple of dict.
+            names = list(data[0])
+        else:
+            # Case `data` is a tuple with tuple of keys of dict as 1st parameter,
+            # and generator of dicts as 2nd paramter.
+            names = data[0]
+            data = data[1]
+           
+        cols = {name: [] for name in names}
         for entry in data:
             for key in entry:
                 val = entry[key]
                 cols[key].append(val)
-        arrays = [pa.array(cols[col]) for col in cols]
+
+        to_dict = ('feed', 'pair', 'side')
+        arrays = [pa.array(cols[col], pa.string()).dictionary_encode() if col in to_dict
+                  else pa.array(cols[col]) for col in cols]
         table = pa.Table.from_arrays(arrays, names=names)
         self.data = table
+
 
     def write(self, exchange, data_type, pair, timestamp):
         if not self.data:
             return
         file_name = ''
+        timestamp = str(int(timestamp))
         if self.file_name:
             for var in self.file_name:
                 if var == 'timestamp':
-                    file_name += f"{int(timestamp)}-"
+                    file_name += f"{timestamp}-"
                 elif var == 'data_type':
                     file_name += f"{data_type}-"
                 elif var == "exchange":
@@ -74,26 +112,63 @@ class Parquet(Store):
                 elif var == "pair":
                     file_name += f"{pair}-"
                 else:
-                    print(var)
                     raise ValueError("Invalid file format specified for parquet file")
             file_name = file_name[:-1] + ".parquet"
         else:
-            file_name = f'{exchange}-{data_type}-{pair}-{int(timestamp)}.parquet'
+            file_name = f'{exchange}-{data_type}-{pair}-{timestamp}.parquet'
 
-        if self.path:
-            file_name = os.path.join(self.path, file_name)
+        f_name_tips = tuple(file_name.split(timestamp))
 
-        pq.write_table(self.data, file_name)
+        if self.path and self.prefix_date:
+            date = str(datetime.date.fromtimestamp(int(timestamp)))
+            local_path = os.path.join(self.path, date)
+        else:
+            local_path = self.path
+
+        # Write parquet file and manage `counter`.
+        if f_name_tips not in self.buffer:
+            # Case 'create new parquet file'.
+            file_name += '.tmp' if self.append_counter else ''
+            if self.path:
+                os.makedirs(local_path, mode=0o755, exist_ok=True)
+                file_name = os.path.join(local_path, file_name)
+            writer = pq.ParquetWriter(file_name, self.data.schema, compression=self.comp_codec, compression_level=self.comp_level)
+            writer.write_table(table=self.data)
+            self.buffer[f_name_tips] = {'counter': 0, 'writer': writer, 'timestamp': timestamp}
+        else:
+            # Case 'append existing parquet file'.
+            writer = self.buffer[f_name_tips]['writer']
+            writer.write_table(table=self.data)
+            self.buffer[f_name_tips]['counter'] += 1
+
         self.data = None
 
-        if self._write:
-            for func, bucket, prefix, kwargs in zip(self._write, self.bucket, self.prefix, self.kwargs):
-                path = f'{exchange}/{data_type}/{pair}/{exchange}-{data_type}-{pair}-{int(timestamp)}.parquet'
-                if prefix:
-                    path = f"{prefix}/{path}"
-                func(bucket, path, file_name, **kwargs)
-            if self.del_file:
-                os.remove(file_name)
+        # If `append_counter` is reached, close parquet file and reset `counter`.
+        if self.buffer[f_name_tips]['counter'] == self.append_counter:
+            writer.close()
+            if self._write or self.append_counter:
+                timestamp = self.buffer[f_name_tips]['timestamp']
+                file_name = f_name_tips[0] + timestamp + f_name_tips[1]
+                if self.path:
+                    file_name = os.path.join(local_path, file_name)
+                if self.append_counter:
+                    # Remove '.tmp' suffix
+                    os.rename(file_name + '.tmp', file_name)
+                if self._write:
+                    # Upload in cloud storage (GCS, S3 or GD)
+                    for func, bucket, prefix, kwargs in zip(self._write, self.bucket, self.prefix, self.kwargs):
+                        path = self.default_path(exchange, data_type, pair) + f'/{exchange}-{data_type}-{pair}-{timestamp}.parquet'
+                        if prefix:
+                            path = f"{prefix}/{path}"
+                        elif self.prefix_date:
+                            date = str(datetime.date.fromtimestamp(int(timestamp)))
+                            path = f"{date}/{path}"
+                        func(bucket, path, file_name, **kwargs)
+                    if self.del_file:
+                        os.remove(file_name)
+            # Reset counter
+            del self.buffer[f_name_tips]
+
 
     def get_start_date(self, exchange: str, data_type: str, pair: str) -> float:
         objs = []

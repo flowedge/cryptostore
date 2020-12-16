@@ -38,6 +38,7 @@ class Collector(Process):
             window = 1000
             delta = False
             timeout = timeouts.get(callback_type, 120)
+            snap_interval = False
 
             if 'book_interval' in value:
                 window = value['book_interval']
@@ -45,6 +46,8 @@ class Collector(Process):
                 delta = True
             if 'max_depth' in value:
                 depth = value['max_depth']
+            if 'snapshot_interval' in value:
+                snap_interval = value['snapshot_interval']
 
             if callback_type in (L2_BOOK, L3_BOOK, L2_BOOK_SWAP, L2_BOOK_FUTURES):
                 self.exchange_config[callback_type] = self.exchange_config[callback_type]['symbols']
@@ -54,21 +57,23 @@ class Collector(Process):
                     kwargs = {'host': self.config['redis']['ip'], 'port': self.config['redis']['port'], 'numeric_type': float}
                 else:
                     kwargs = {'socket': self.config['redis']['socket'], 'numeric_type': float}
-                from cryptofeed.backends.redis import TradeStream, BookStream, BookDeltaStream, TickerStream, FundingStream, OpenInterestStream
+                from cryptofeed.backends.redis import TradeStream, BookStream, BookDeltaStream, TickerStream, FundingStream, OpenInterestStream, LiquidationsStream
                 trade_cb = TradeStream
                 book_cb = BookStream
                 book_up = BookDeltaStream if delta else None
                 ticker_cb = TickerStream
                 funding_cb = FundingStream
                 oi_cb = OpenInterestStream
+                liq_cb = LiquidationsStream
             elif cache == 'kafka':
-                from cryptofeed.backends.kafka import TradeKafka, BookKafka, BookDeltaKafka, TickerKafka, FundingKafka, OpenInterestKafka
+                from cryptofeed.backends.kafka import TradeKafka, BookKafka, BookDeltaKafka, TickerKafka, FundingKafka, OpenInterestKafka, LiquidationsKafka
                 trade_cb = TradeKafka
                 book_cb = BookKafka
                 book_up = BookDeltaKafka if delta else None
                 ticker_cb = TickerKafka
                 funding_cb = FundingKafka
                 oi_cb = OpenInterestKafka
+                liq_cb = LiquidationsKafka
                 kwargs = {'host': self.config['kafka']['ip'], 'port': self.config['kafka']['port']}
 
             if callback_type == TRADES:
@@ -106,7 +111,7 @@ class Collector(Process):
 
             if 'pass_through' in self.config:
                 if self.config['pass_through']['type'] == 'zmq':
-                    from cryptofeed.backends.zmq import TradeZMQ, BookDeltaZMQ, BookZMQ, FundingZMQ, OpenInterestZMQ, TickerZMQ
+                    from cryptofeed.backends.zmq import TradeZMQ, BookDeltaZMQ, BookZMQ, FundingZMQ, OpenInterestZMQ, TickerZMQ, LiquidationsZMQ
                     import zmq
                     host = self.config['pass_through']['host']
                     port = self.config['pass_through']['port']
@@ -134,6 +139,6 @@ class Collector(Process):
                     if BOOK_DELTA in cb:
                         cb[BOOK_DELTA].append(BookDeltaZMQ(host=host, port=port))
 
-            fh.add_feed(self.exchange, timeout=timeout, max_depth=depth, book_interval=window, config={callback_type: self.exchange_config[callback_type]}, callbacks=cb)
+            fh.add_feed(self.exchange, timeout=timeout, max_depth=depth, snapshot_interval=snap_interval, book_interval=window, config={callback_type: self.exchange_config[callback_type]}, callbacks=cb)
 
         fh.run()
