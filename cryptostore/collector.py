@@ -9,8 +9,8 @@ from multiprocessing import Process
 import logging
 
 from cryptofeed import FeedHandler
-from cryptofeed.defines import TRADES, L2_BOOK, L3_BOOK, BOOK_DELTA, TICKER, FUNDING, OPEN_INTEREST
-
+from cryptofeed.defines import TRADES, L2_BOOK, L3_BOOK, BOOK_DELTA, TICKER, FUNDING, OPEN_INTEREST, LIQUIDATIONS
+from cryptofeed.pairs import ftx_pairs, binance_futures_pairs, bitmex_pairs
 
 LOG = logging.getLogger('cryptostore')
 
